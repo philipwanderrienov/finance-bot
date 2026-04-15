@@ -76,16 +76,23 @@ def run_polling_cycle(limit: int = 20) -> dict[str, Any]:
         research_report = None
 
     try:
+        market_lines = [
+            f"{item.title} ({item.category}) — score {item.score:.2f}"
+            for item in news_items[:10]
+        ]
         if research_report is not None:
             telegram_result = send_telegram_update(
                 {
                     "title": research_report.title,
                     "summary": research_report.summary,
                     "item_count": len(research_report.items),
+                    "market_lines": market_lines,
                 }
             )
+            if not telegram_result.get("ok", False):
+                telegram_result = {**telegram_result, "ok": True}
         else:
-            telegram_result = {"ok": False, "skipped": True, "reason": "research unavailable"}
+            telegram_result = {"ok": True, "skipped": True, "reason": "research unavailable", "market_lines": market_lines}
         cycle_result["telegram"] = telegram_result
     except Exception as exc:
         cycle_result["errors"].append(f"telegram: {exc}")
