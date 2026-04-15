@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "finance-bot"
+version = "0.1.0"
+description = "Beginner-friendly Python microservices project for financial market tracking and Telegram alerts."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "httpx",
+    "psycopg2-binary",
+    "pydantic",
+    "python-dotenv",
+    "apscheduler",
+]
