@@ -7,7 +7,7 @@ Financial Bot is a beginner-friendly Python microservices project focused on:
 - Stock market news
 - Crypto news
 - Polymarket market monitoring
-- Telegram alerts
+- A frontend dashboard for presenting market data and recommendations
 
 The system is split into small Python services that each do one job. This keeps the project simple for beginners while still matching a real microservices design.
 
@@ -67,25 +67,26 @@ The system is split into small Python services that each do one job. This keeps 
 **Responsibilities:**
 - Combines fresh news with market snapshots
 - Produces simple summaries for humans
-- Generates alert-worthy insights
+- Generates dashboard-ready insights
 - Saves reports to the database
 
 **Output:**
 - Structured research reports
-- Optional message payloads for Telegram
+- Dashboard JSON payloads
 
-### 5. Telegram Notification Service
-**Job:** Send alerts to Telegram chats.
+### 5. Frontend Dashboard
+**Job:** Present the latest market and recommendation data in the browser.
 
 **Responsibilities:**
-- Reads messages that are ready to send
-- Applies rate limiting
-- Sends formatted alerts to configured chats
-- Marks messages as sent or failed
-- Stores message history before sending
+- Fetch structured API responses from the backend
+- Render a markets grid
+- Render buy/sell stock recommendation sections
+- Display price details, summaries, and metadata
+- Refresh the view as new backend data becomes available
 
 **Output:**
-- Telegram notifications for users or groups
+- Human-friendly dashboard UI
+- Browser-based presentation layer
 
 ## How the services communicate
 
@@ -96,11 +97,12 @@ The system uses PostgreSQL as the shared source of truth.
 - Worker services read jobs or run on scheduler triggers
 - Ingestion services write data into database tables
 - Research service reads recent markets and news
-- Telegram service reads unsent notification messages
+- Orchestrator prepares dashboard payloads for the frontend
+- Frontend reads structured JSON from the backend API
 - Each service updates status fields so others can see progress
 
 ### Beginner-friendly rule
-Each service should:
+Each backend service should:
 1. Read the data it needs
 2. Do one clear task
 3. Write the result back to PostgreSQL
@@ -117,8 +119,9 @@ A typical run looks like this:
 2. Market ingestion fetches Polymarket market updates
 3. News aggregation fetches related news articles
 4. Research summarization combines the new data into a report
-5. Telegram notification sends the report or alert to Telegram
-6. Each step stores its result in PostgreSQL
+5. Orchestrator prepares a dashboard payload from the latest data
+6. The frontend dashboard fetches and renders the payload
+7. Each step stores its result in PostgreSQL
 
 ## Deployment notes
 
@@ -133,7 +136,10 @@ A typical run looks like this:
 - `market-ingestion` service can be started by the scheduler or on demand
 - `news-aggregation` service can also run on a schedule
 - `research-summarization` service runs after fresh data is available
-- `telegram-notification` service polls for unsent messages or reacts to inserted rows
+- `frontend-dashboard` runs as a separate Vite app and calls the backend API
+
+### Launcher note
+For local development, `python main.py backend` can start the backend API and orchestrator together from one command. The lower-level services still matter when you want to run ingestion, aggregation, or research separately, or when you need to test a specific stage in isolation.
 
 ### Beginner-friendly deployment idea
 Start with a single machine or local Docker Compose setup:
@@ -148,12 +154,13 @@ This project only focuses on:
 - Crypto
 - Polymarket related market data from Gamma, Data, and public CLOB read endpoints
 - News relevant to those topics
-- Telegram alerts
+- A browser-based dashboard for viewing market data and recommendation summaries
 
 It does not support:
 - authenticated Polymarket trading
 - general-purpose markets
 - unrelated domains
+- Telegram-first presentation
 
 ## Design goals
 

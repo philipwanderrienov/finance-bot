@@ -10,7 +10,7 @@ This repository is organized as a small set of synchronous Python services:
 - `ingestion` - fetches Polymarket market data
 - `aggregation` - filters and clusters news items
 - `research` - creates a simple report object
-- `telegram_notifier` - prepares and sends a Telegram message
+- `api` - prepares dashboard payloads for the frontend
 
 The project is intentionally beginner-friendly and keeps authenticated Polymarket CLOB trading out of scope.
 
@@ -34,6 +34,7 @@ Typical environment variables used by the app:
 - `DATABASE_URL`
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
+- `FRONTEND_BASE_URL`
 - `POLYMARKET_GAMMA_API_URL`
 - `POLYMARKET_DATA_API_URL`
 - `POLYMARKET_CLOB_API_URL`
@@ -42,22 +43,49 @@ See `shared/config.py` for the exact field names expected by the code. The share
 
 ## Run the services
 
-The repo includes a CLI launcher in `main.py`. Run it with one of the service names:
+The repo includes a CLI launcher in `main.py`.
+
+### Start the full backend with one command
+
+Use this when you want the backend stack running locally without starting each service by hand:
 
 ```bash
-python main.py orchestrator
+python backend/main.py backend
+```
+
+This command starts the backend services that power the app, with readable console output and graceful shutdown handling.
+
+In the current setup, `python main.py backend` starts:
+
+- `api`
+- `orchestrator`
+
+Depending on how you use the project, the other microservices may still be started separately:
+
+```bash
 python main.py ingestion
 python main.py aggregation
 python main.py research
-python main.py telegram_notifier
 ```
 
+### When each service still matters
+
+- `api` - use this when you only want the dashboard API running
+- `orchestrator` - use this when you want polling cycles and background coordination
+- `ingestion` - use this for fetching and storing Polymarket market data
+- `aggregation` - use this for collecting and filtering news items
+- `research` - use this for turning the latest data into short research reports
+
 The orchestrator also has a worker mode for running background jobs when configured that way. In worker mode, a single recoverable stage or network error is logged and the next cycle continues after the backoff.
+
+The dashboard backend lives under `backend/services/api/` and prepares structured JSON for the frontend dashboard. The frontend app in `frontend/` consumes that payload and renders:
+- a markets grid
+- recommended stocks with buy/sell details and pricing information
 
 If your launcher supports a help flag, you can inspect available commands with:
 
 ```bash
-python main.py --help
+python backend/main.py --help
 ```
 
 ## Smoke test
@@ -73,8 +101,9 @@ This imports the shared package and service entrypoints and prints a clear pass/
 ## Project layout
 
 - `main.py` - CLI launcher
-- `shared/` - config, models, database, Polymarket, and Telegram helpers
-- `services/` - runnable service entrypoints
+- `shared/` - config, models, database, and Polymarket helpers
+- `frontend/` - React + Vite dashboard app
+- `backend/services/` - runnable Python service entrypoints
 - `scripts/` - simple utility scripts such as the smoke test
 - `docs/` - architecture and integration notes
 

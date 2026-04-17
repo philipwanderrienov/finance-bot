@@ -1,8 +1,8 @@
 # Telegram Integration Contract
 
-This document defines how the Financial Bot sends Telegram notifications.
+This document describes the legacy Telegram notification path that existed before the dashboard refactor.
 
-The Telegram integration belongs to a dedicated **telegram-notification** service. Its job is to:
+The Telegram integration previously belonged to a dedicated **telegram-notification** service. Its job was to:
 - read ready-to-send messages from storage
 - format messages for Telegram
 - apply chat settings and rate limiting
@@ -10,13 +10,13 @@ The Telegram integration belongs to a dedicated **telegram-notification** servic
 - persist send status before and after delivery
 - support the current worker mode flow used by the orchestrator
 
-The goal is to keep Telegram delivery reliable, predictable, and easy to understand.
+The goal was to keep Telegram delivery reliable, predictable, and easy to understand.
 
 ---
 
 ## 1) Design goals
 
-The Telegram service should:
+The Telegram service used to:
 - send alerts in a consistent format
 - support multiple alert types
 - respect quiet hours and rate limits
@@ -24,34 +24,34 @@ The Telegram service should:
 - record success or failure for every attempt
 - stay focused only on notification delivery
 
-It should not:
+It was not meant to:
 - poll external APIs directly
 - summarize news
 - make market decisions
 
-Those responsibilities belong to other services.
+Those responsibilities belonged to other services.
 
 ---
 
 ## 2) Message flow
 
-A simple message flow is:
+A simple message flow used to be:
 
-1. A producer service creates a notification request
-2. The request is stored in PostgreSQL as a pending Telegram message
-3. The Telegram service reads pending messages
-4. The service formats the message
-5. The service checks chat settings and rate limits
-6. The service sends the message to Telegram
-7. The service updates the message status in the database
+1. A producer service created a notification request
+2. The request was stored in PostgreSQL as a pending Telegram message
+3. The Telegram service read pending messages
+4. The service formatted the message
+5. The service checked chat settings and rate limits
+6. The service sent the message to Telegram
+7. The service updated the message status in the database
 
-This makes sending observable and retryable.
+This made sending observable and retryable.
 
 ---
 
 ## 3) Persistent message states
 
-Telegram messages should be saved before delivery so no alert is lost if the service restarts.
+Telegram messages were saved before delivery so no alert was lost if the service restarted.
 
 Recommended states:
 - `pending` — ready to be sent
@@ -79,7 +79,7 @@ Recommended fields in storage:
 
 ## 4) Alert types
 
-The bot should support a small, clear set of alert types.
+The bot supported a small, clear set of alert types.
 
 ### Suggested alert types
 - `market_update`
@@ -91,19 +91,19 @@ The bot should support a small, clear set of alert types.
 - `system_status`
 
 ### Beginner-friendly meaning
-- `market_update`: a new market or market snapshot is available
+- `market_update`: a new market or market snapshot was available
 - `news_update`: a relevant news article was found
 - `research_summary`: a summarization service produced an analysis
 - `price_movement`: a notable price or probability change was detected
 - `trend_change`: a trend or sentiment shift was detected
-- `error`: something went wrong and needs attention
+- `error`: something went wrong and needed attention
 - `system_status`: routine service health or startup/shutdown notification
 
 ---
 
 ## 5) Message format
 
-Messages should be short, readable, and useful on mobile.
+Messages were short, readable, and useful on mobile.
 
 ### Suggested structure
 - title line
@@ -152,7 +152,7 @@ Recommended style:
 - short labels
 - line breaks for readability
 
-If formatting is added later, keep it consistent across all alerts.
+If formatting was added later, keep it consistent across all alerts.
 
 ---
 
@@ -174,10 +174,10 @@ Each Telegram chat or channel should have its own settings.
 - `is_channel`
 
 ### Behavior
-A chat can choose:
-- which alert types it wants
-- whether quiet hours apply
-- the minimum priority it accepts
+A chat could choose:
+- which alert types it wanted
+- whether quiet hours applied
+- the minimum priority it accepted
 
 Example:
 - a private admin chat may receive `error` and `system_status`
@@ -187,7 +187,7 @@ Example:
 
 ## 8) Rate limiting
 
-Telegram delivery should be rate-limited so the bot does not send too many messages too quickly.
+Telegram delivery should be rate-limited so the bot did not send too many messages too quickly.
 
 ### Rate limiting goals
 - protect against Telegram API limits
@@ -228,13 +228,13 @@ Telegram delivery should respect the scheduler quiet-hours policy when possible.
 - allow important error or system alerts if needed
 - mark skipped messages clearly in storage
 
-This prevents unnecessary notifications while keeping critical alerts visible.
+This prevented unnecessary notifications while keeping critical alerts visible.
 
 ---
 
 ## 10) Persistence before sending
 
-Every message must be persisted before the service tries to send it.
+Every message had to be persisted before the service tried to send it.
 
 ### Required steps
 1. Create a `pending` record in PostgreSQL
@@ -243,17 +243,17 @@ Every message must be persisted before the service tries to send it.
 4. Update the record to `sent` or `failed`
 5. Store the Telegram response metadata when available
 
-### Why this matters
-If the service crashes:
-- pending messages are not lost
-- failed messages can be retried
-- duplicates can be avoided by checking message status
+### Why this mattered
+If the service crashed:
+- pending messages were not lost
+- failed messages could be retried
+- duplicates could be avoided by checking message status
 
 ---
 
 ## 11) Retry policy for sending
 
-Sending can fail for temporary reasons such as network issues or Telegram rate limits.
+Sending could fail for temporary reasons such as network issues or Telegram rate limits.
 
 ### Suggested retry settings
 - `max_retries`: 3
@@ -266,7 +266,7 @@ Retry only for temporary failures:
 - 429 rate limit response
 - temporary Telegram API failure
 
-Do not retry forever. If all attempts fail:
+Do not retry forever. If all attempts failed:
 - mark the message as `failed`
 - store the final error
 - optionally alert an admin chat
@@ -275,7 +275,7 @@ Do not retry forever. If all attempts fail:
 
 ## 12) Message priorities
 
-A simple priority system helps the bot decide what to send first.
+A simple priority system helped the bot decide what to send first.
 
 ### Suggested priority levels
 - `low`
@@ -289,7 +289,7 @@ A simple priority system helps the bot decide what to send first.
 - `high`: strong price movement
 - `critical`: service failure or urgent data issue
 
-Priority can affect:
+Priority could affect:
 - ordering in the queue
 - whether quiet hours apply
 - retry speed
@@ -298,7 +298,7 @@ Priority can affect:
 
 ## 13) Telegram API interaction
 
-The service should isolate Telegram-specific API calls in one place.
+The service isolated Telegram-specific API calls in one place.
 
 Responsibilities:
 - authenticate with the bot token
@@ -307,7 +307,7 @@ Responsibilities:
 - capture message IDs and timestamps
 - avoid direct Telegram calls from other services
 
-This keeps the rest of the system independent from Telegram details.
+This kept the rest of the system independent from Telegram details.
 
 ---
 
@@ -330,7 +330,7 @@ A simple configuration set could be:
 
 ## 15) Suggested database integration
 
-The Telegram service should read and update a `telegram_messages` table.
+The Telegram service read and updated a `telegram_messages` table.
 
 Typical workflow:
 - insert new message rows with `pending`
@@ -339,7 +339,7 @@ Typical workflow:
 - update status after the API response
 - store retry count and error details
 
-This makes delivery auditable and easy to debug.
+This made delivery auditable and easy to debug.
 
 ---
 
@@ -389,18 +389,12 @@ Recommended first-version defaults:
 - quiet hours respected for non-critical alerts
 - compatible with the smoke test command in `scripts/smoke_test.py`
 
-This keeps the integration easy to operate while still being reliable.
+This kept the integration easy to operate while still being reliable.
 
 ---
 
 ## 18) Notes for microservices
 
-The Telegram service should only handle:
-- message formatting
-- message persistence
-- message sending
-- delivery status updates
+This document is kept for historical reference only.
 
-Other services should only create message requests. They should not know Telegram API details.
-
-This separation keeps the system modular and easy to extend later.
+The dashboard refactor now moves end-user presentation to the frontend dashboard, so Telegram is no longer part of the primary delivery path. Any future Telegram support should be treated as optional legacy output, not the main user interface.

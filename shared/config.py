@@ -16,6 +16,7 @@ class Settings:
     )
     telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     telegram_chat_id: str = os.getenv("TELEGRAM_CHAT_ID", "")
+    frontend_base_url: str = os.getenv("FRONTEND_BASE_URL", "http://localhost:5173")
     gamma_api_base_url: str = os.getenv("GAMMA_API_BASE_URL", "https://gamma-api.polymarket.com")
     data_api_base_url: str = os.getenv("DATA_API_BASE_URL", "https://data-api.polymarket.com")
     clob_api_base_url: str = os.getenv("CLOB_API_BASE_URL", "https://clob.polymarket.com")
