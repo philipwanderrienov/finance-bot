@@ -1,0 +1,19 @@
+Arsitektur system (Microservices):
+1. NLP & Sentiment Engine: Layanan ini bertugas memproses teks berita. Kamu bisa mengintegrasikan API LLM atau menggunakan model spesifik seperti FinBERT. Model ini akan membaca berita dan memberikan skor sentimen: Bullish (Positif), Bearish (Negatif), atau Neutral.
+2. Menggunakan API dari Polymarket dengan efisien
+3. Advisory & Logic Engine: Ini adalah otak dari financial advisor kamu. Sistem ini akan menerima skor sentimen dan menggabungkannya dengan data indikator teknikal pasar saat ini. Membangun modul ini dengan standar reliabilitas yang biasa digunakan pada infrastruktur sistem perbankan akan memastikan kalkulasi risiko berjalan presisi.
+4. Advisor Dashboard (React): Antarmuka pengguna (frontend) yang bersih dan reaktif untuk menampilkan ringkasan portofolio, metrik sentimen pasar, dan alasan di balik setiap rekomendasi jual/beli yang diberikan oleh bot.
+
+Skenario alur kerja bot:
+1. Sistem mendeteksi lonjakan berita mengenai perubahan kebijakan energi nasional atau fluktuasi harga komoditas global.
+2. Mesin sentimen menganalisis artikel tersebut dan menyimpulkan sentimen bullish atau bearish.
+3. Advisory Engine kemudian memverifikasi momentum ini dengan mengecek volume perdagangan dan indikator teknikal terkini dari API Polymarket
+4. Jika datanya selaras, bot akan memunculkan notifikasi di dashboard React kamu: "Rekomendasi Beli: WTI Crude. Alasan: Sentimen berita positif terkait kenaikan harga minyak global didukung oleh lonjakan volume perdagangan sebesar 15% di sesi pagi."
+
+Fitur utama "Personal Advisor":
+1. Portfolio Impact Analysis: Bot tidak hanya melempar sinyal acak, tetapi memantau saham yang sudah kamu miliki dan memberikan rekomendasi khusus (misal: saran cut loss jika ada berita investigasi pada perusahaan terkait).
+2. News Summarization: Daripada harus membaca puluhan artikel panjang, bot memberikan rangkuman satu paragraf berisi inti berita yang memengaruhi pergerakan harga.
+3. Backtesting Module: Sebelum mempercayai rekomendasi bot untuk uang sungguhan, kamu bisa menjalankan algoritma ini pada data berita dan harga saham tahun lalu untuk melihat seberapa akurat sarannya.
+
+Realitas dan Manajemen Resiko:
+Sebagai pengingat yang realistis, pasar saham sering kali bergerak mengikuti prinsip "Buy the rumor, sell the news". Berita resmi yang muncul di portal web sering kali merupakan lagging indicator (harga saham mungkin sudah bergerak sebelum berita rilis). Oleh karena itu, sangat penting untuk memposisikan bot ini sebagai co-pilot atau asisten analisis yang membantu menyaring noise pasar, bukan sebagai pengambil keputusan mutlak tanpa pengawasan manusia.
