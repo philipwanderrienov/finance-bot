@@ -1,281 +1,275 @@
--- public.scheduler_jobs definition
+-- Finance Bot PostgreSQL schema for macOS/local development
+-- Intended to match the current application code in:
+-- - shared/db.py
+-- - shared/models.py
+-- - services/ingestion/app.py
+-- - services/orchestrator/app.py
+-- - services/aggregation/app.py
+-- - services/research/app.py
+-- - services/telegram_notifier/app.py
+--
+-- Usage:
+--   psql "$POSTGRES_DSN" -f db/untukmacbook.sql
+-- or:
+--   psql -h 127.0.0.1 -U postgres -d financebot -f db/untukmacbook.sql
 
--- Drop table
+BEGIN;
 
--- DROP TABLE public.scheduler_jobs;
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
-CREATE TABLE public.scheduler_jobs (
-	id bigserial NOT NULL,
-	job_name text NOT NULL,
-	service_name text NOT NULL,
-	enabled bool DEFAULT true NOT NULL,
-	schedule_type text NOT NULL,
-	schedule_value text NOT NULL,
-	timezone text DEFAULT 'UTC'::text NOT NULL,
-	last_run_at timestamptz NULL,
-	next_run_at timestamptz NULL,
-	last_status text NULL,
-	retry_count int4 DEFAULT 0 NOT NULL,
-	max_retries int4 DEFAULT 3 NOT NULL,
-	created_at timestamptz DEFAULT now() NOT NULL,
-	updated_at timestamptz DEFAULT now() NOT NULL,
-	CONSTRAINT scheduler_jobs_job_name_key UNIQUE (job_name),
-	CONSTRAINT scheduler_jobs_max_retries_check CHECK ((max_retries >= 0)),
-	CONSTRAINT scheduler_jobs_pkey PRIMARY KEY (id),
-	CONSTRAINT scheduler_jobs_retry_count_check CHECK ((retry_count >= 0))
+CREATE OR REPLACE FUNCTION set_updated_at()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    NEW.updated_at = now();
+    RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION touch_updated_at()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    NEW.updated_at = now();
+    RETURN NEW;
+END;
+$$;
+
+-- Drop dependent tables first so this script can be re-run safely on a clean dev database.
+DROP TABLE IF EXISTS telegram_messages CASCADE;
+DROP TABLE IF EXISTS ingestion_runs CASCADE;
+DROP TABLE IF EXISTS scheduler_jobs CASCADE;
+DROP TABLE IF EXISTS market_snapshots CASCADE;
+DROP TABLE IF EXISTS research_reports CASCADE;
+DROP TABLE IF EXISTS news_items CASCADE;
+DROP TABLE IF EXISTS markets CASCADE;
+DROP TABLE IF EXISTS sources CASCADE;
+
+CREATE TABLE IF NOT EXISTS sources (
+    id BIGSERIAL PRIMARY KEY,
+    source_type TEXT NOT NULL,
+    name TEXT NOT NULL UNIQUE,
+    base_url TEXT NULL,
+    domain TEXT NULL,
+    category TEXT NOT NULL CHECK (category IN ('stocks', 'crypto')),
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT sources_source_type_non_empty CHECK (length(trim(source_type)) > 0),
+    CONSTRAINT sources_name_non_empty CHECK (length(trim(name)) > 0),
+    CONSTRAINT sources_category_non_empty CHECK (length(trim(category)) > 0)
 );
-CREATE INDEX idx_scheduler_jobs_enabled ON public.scheduler_jobs USING btree (enabled);
-CREATE INDEX idx_scheduler_jobs_next_run_at ON public.scheduler_jobs USING btree (next_run_at);
-CREATE INDEX idx_scheduler_jobs_service_name ON public.scheduler_jobs USING btree (service_name);
 
--- Table Triggers
+CREATE INDEX idx_sources_source_type ON sources (source_type);
+CREATE INDEX idx_sources_category ON sources (category);
+CREATE INDEX idx_sources_is_active ON sources (is_active);
 
-create trigger scheduler_jobs_set_updated_at before
-update
-    on
-    public.scheduler_jobs for each row execute function set_updated_at();
+CREATE TRIGGER sources_set_updated_at
+BEFORE UPDATE ON sources
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
 
-
--- public.sources definition
-
--- Drop table
-
--- DROP TABLE public.sources;
-
-CREATE TABLE public.sources (
-	id bigserial NOT NULL,
-	source_type text NOT NULL,
-	"name" text NOT NULL,
-	base_url text NULL,
-	"domain" text NULL,
-	category text NOT NULL,
-	is_active bool DEFAULT true NOT NULL,
-	created_at timestamptz DEFAULT now() NOT NULL,
-	updated_at timestamptz DEFAULT now() NOT NULL,
-	CONSTRAINT sources_category_check CHECK ((category = ANY (ARRAY['stocks'::text, 'crypto'::text]))),
-	CONSTRAINT sources_name_key UNIQUE (name),
-	CONSTRAINT sources_pkey PRIMARY KEY (id),
-	CONSTRAINT sources_source_type_non_empty CHECK ((length(TRIM(BOTH FROM source_type)) > 0))
+CREATE TABLE IF NOT EXISTS markets (
+    id BIGSERIAL PRIMARY KEY,
+    external_id TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT 'stocks',
+    url TEXT,
+    score DOUBLE PRECISION NOT NULL DEFAULT 0,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX idx_sources_category ON public.sources USING btree (category);
-CREATE INDEX idx_sources_source_type ON public.sources USING btree (source_type);
 
--- Table Triggers
+CREATE INDEX idx_markets_category ON markets (category);
+CREATE INDEX idx_markets_external_id ON markets (external_id);
+CREATE INDEX idx_markets_updated_at ON markets (updated_at DESC);
 
-create trigger sources_set_updated_at before
-update
-    on
-    public.sources for each row execute function set_updated_at();
+CREATE TRIGGER markets_set_updated_at
+BEFORE UPDATE ON markets
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
 
-
--- public.ingestion_runs definition
-
--- Drop table
-
--- DROP TABLE public.ingestion_runs;
-
-CREATE TABLE public.ingestion_runs (
-	id bigserial NOT NULL,
-	job_id int8 NULL,
-	source_id int8 NULL,
-	run_type text NOT NULL,
-	status text NOT NULL,
-	started_at timestamptz NOT NULL,
-	finished_at timestamptz NULL,
-	items_seen int4 DEFAULT 0 NOT NULL,
-	items_inserted int4 DEFAULT 0 NOT NULL,
-	items_updated int4 DEFAULT 0 NOT NULL,
-	error_message text NULL,
-	metadata jsonb NULL,
-	created_at timestamptz DEFAULT now() NOT NULL,
-	CONSTRAINT ingestion_runs_items_inserted_check CHECK ((items_inserted >= 0)),
-	CONSTRAINT ingestion_runs_items_seen_check CHECK ((items_seen >= 0)),
-	CONSTRAINT ingestion_runs_items_updated_check CHECK ((items_updated >= 0)),
-	CONSTRAINT ingestion_runs_pkey PRIMARY KEY (id),
-	CONSTRAINT ingestion_runs_job_id_fkey FOREIGN KEY (job_id) REFERENCES public.scheduler_jobs(id),
-	CONSTRAINT ingestion_runs_source_id_fkey FOREIGN KEY (source_id) REFERENCES public.sources(id)
+CREATE TABLE IF NOT EXISTS news_items (
+    id BIGSERIAL PRIMARY KEY,
+    source_id BIGINT NOT NULL REFERENCES sources(id) ON DELETE RESTRICT,
+    market_id BIGINT NULL REFERENCES markets(id) ON DELETE SET NULL,
+    external_id TEXT NULL,
+    title TEXT NOT NULL,
+    summary TEXT NULL,
+    content TEXT NULL,
+    url TEXT NOT NULL,
+    domain TEXT NULL,
+    category TEXT NOT NULL CHECK (category IN ('stocks', 'crypto')),
+    published_at TIMESTAMPTZ NULL,
+    fetched_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    metadata JSONB NULL,
+    CONSTRAINT news_items_url_unique UNIQUE (url),
+    CONSTRAINT news_items_source_external_unique UNIQUE (source_id, external_id),
+    CONSTRAINT news_items_title_non_empty CHECK (length(trim(title)) > 0),
+    CONSTRAINT news_items_url_non_empty CHECK (length(trim(url)) > 0)
 );
-CREATE INDEX idx_ingestion_runs_job_id ON public.ingestion_runs USING btree (job_id);
-CREATE INDEX idx_ingestion_runs_run_type ON public.ingestion_runs USING btree (run_type);
-CREATE INDEX idx_ingestion_runs_source_id ON public.ingestion_runs USING btree (source_id);
-CREATE INDEX idx_ingestion_runs_started_at ON public.ingestion_runs USING btree (started_at DESC);
-CREATE INDEX idx_ingestion_runs_status ON public.ingestion_runs USING btree (status);
 
+CREATE INDEX idx_news_items_source_id ON news_items (source_id);
+CREATE INDEX idx_news_items_market_id ON news_items (market_id);
+CREATE INDEX idx_news_items_category ON news_items (category);
+CREATE INDEX idx_news_items_published_at ON news_items (published_at);
+CREATE INDEX idx_news_items_domain ON news_items (domain);
+CREATE INDEX idx_news_items_external_id ON news_items (external_id);
 
--- public.markets definition
-
--- Drop table
-
--- DROP TABLE public.markets;
-
-CREATE TABLE public.markets (
-	id bigserial NOT NULL,
-	source_id int8 NULL,
-	external_id text NOT NULL,
-	slug text NULL,
-	title text NOT NULL,
-	description text NULL,
-	category text NOT NULL,
-	status text DEFAULT 'unknown'::text NULL,
-	url text NULL,
-	published_at timestamptz NULL,
-	resolved_at timestamptz NULL,
-	created_at timestamptz DEFAULT now() NOT NULL,
-	updated_at timestamptz DEFAULT now() NOT NULL,
-	"source" text DEFAULT 'polymarket'::text NOT NULL,
-	score numeric DEFAULT 0 NOT NULL,
-	metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
-	CONSTRAINT markets_category_check CHECK ((category = ANY (ARRAY['stocks'::text, 'crypto'::text]))),
-	CONSTRAINT markets_external_id_key UNIQUE (external_id),
-	CONSTRAINT markets_pkey PRIMARY KEY (id),
-	CONSTRAINT markets_source_external_unique UNIQUE (source_id, external_id),
-	CONSTRAINT markets_source_id_key UNIQUE (source_id),
-	CONSTRAINT markets_source_id_fkey FOREIGN KEY (source_id) REFERENCES public.sources(id)
+CREATE TABLE IF NOT EXISTS market_snapshots (
+    id BIGSERIAL PRIMARY KEY,
+    market_id BIGINT NOT NULL REFERENCES markets(id) ON DELETE CASCADE,
+    snapshot_time TIMESTAMPTZ NOT NULL,
+    source_id BIGINT NOT NULL REFERENCES sources(id) ON DELETE RESTRICT,
+    price NUMERIC(18,8) NULL,
+    best_bid NUMERIC(18,8) NULL,
+    best_ask NUMERIC(18,8) NULL,
+    volume_24h NUMERIC(18,8) NULL,
+    liquidity NUMERIC(18,8) NULL,
+    raw_payload JSONB NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX idx_markets_category ON public.markets USING btree (category);
-CREATE INDEX idx_markets_external_id ON public.markets USING btree (source_id, external_id);
-CREATE INDEX idx_markets_published_at ON public.markets USING btree (published_at);
-CREATE INDEX idx_markets_source_id ON public.markets USING btree (source_id);
-CREATE INDEX idx_markets_status ON public.markets USING btree (status);
 
--- Table Triggers
+CREATE INDEX idx_market_snapshots_market_id ON market_snapshots (market_id);
+CREATE INDEX idx_market_snapshots_snapshot_time ON market_snapshots (snapshot_time DESC);
+CREATE INDEX idx_market_snapshots_market_time ON market_snapshots (market_id, snapshot_time DESC);
+CREATE INDEX idx_market_snapshots_source_id ON market_snapshots (source_id);
 
-create trigger markets_set_updated_at before
-update
-    on
-    public.markets for each row execute function set_updated_at();
-
-
--- public.news_items definition
-
--- Drop table
-
--- DROP TABLE public.news_items;
-
-CREATE TABLE public.news_items (
-	id bigserial NOT NULL,
-	source_id int8 NOT NULL,
-	market_id int8 NULL,
-	external_id text NULL,
-	title text NOT NULL,
-	summary text NULL,
-	"content" text NULL,
-	url text NOT NULL,
-	"domain" text NULL,
-	category text NOT NULL,
-	published_at timestamptz NULL,
-	fetched_at timestamptz DEFAULT now() NOT NULL,
-	created_at timestamptz DEFAULT now() NOT NULL,
-	CONSTRAINT news_items_category_check CHECK ((category = ANY (ARRAY['stocks'::text, 'crypto'::text]))),
-	CONSTRAINT news_items_pkey PRIMARY KEY (id),
-	CONSTRAINT news_items_source_external_unique UNIQUE (source_id, external_id),
-	CONSTRAINT news_items_url_unique UNIQUE (url),
-	CONSTRAINT news_items_market_id_fkey FOREIGN KEY (market_id) REFERENCES public.markets(id),
-	CONSTRAINT news_items_source_id_fkey FOREIGN KEY (source_id) REFERENCES public.sources(id)
+CREATE TABLE IF NOT EXISTS research_reports (
+    id BIGSERIAL PRIMARY KEY,
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    details TEXT NULL,
+    category TEXT NOT NULL CHECK (category IN ('stocks', 'crypto')),
+    market_id BIGINT NULL REFERENCES markets(id) ON DELETE SET NULL,
+    source_window_start TIMESTAMPTZ NULL,
+    source_window_end TIMESTAMPTZ NULL,
+    status TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    metadata JSONB NULL,
+    CONSTRAINT research_reports_title_non_empty CHECK (length(trim(title)) > 0),
+    CONSTRAINT research_reports_summary_non_empty CHECK (length(trim(summary)) > 0),
+    CONSTRAINT research_reports_status_non_empty CHECK (length(trim(status)) > 0)
 );
-CREATE INDEX idx_news_items_category ON public.news_items USING btree (category);
-CREATE INDEX idx_news_items_domain ON public.news_items USING btree (domain);
-CREATE INDEX idx_news_items_market_id ON public.news_items USING btree (market_id);
-CREATE INDEX idx_news_items_published_at ON public.news_items USING btree (published_at);
-CREATE INDEX idx_news_items_source_id ON public.news_items USING btree (source_id);
 
+CREATE INDEX idx_research_reports_category ON research_reports (category);
+CREATE INDEX idx_research_reports_market_id ON research_reports (market_id);
+CREATE INDEX idx_research_reports_status ON research_reports (status);
+CREATE INDEX idx_research_reports_created_at ON research_reports (created_at DESC);
 
--- public.research_reports definition
+CREATE TRIGGER research_reports_set_updated_at
+BEFORE UPDATE ON research_reports
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
 
--- Drop table
-
--- DROP TABLE public.research_reports;
-
-CREATE TABLE public.research_reports (
-	id bigserial NOT NULL,
-	title text NOT NULL,
-	summary text NOT NULL,
-	details text NULL,
-	category text NOT NULL,
-	market_id int8 NULL,
-	source_window_start timestamptz NULL,
-	source_window_end timestamptz NULL,
-	status text NOT NULL,
-	created_at timestamptz DEFAULT now() NOT NULL,
-	updated_at timestamptz DEFAULT now() NOT NULL,
-	CONSTRAINT research_reports_category_check CHECK ((category = ANY (ARRAY['stocks'::text, 'crypto'::text]))),
-	CONSTRAINT research_reports_pkey PRIMARY KEY (id),
-	CONSTRAINT research_reports_market_id_fkey FOREIGN KEY (market_id) REFERENCES public.markets(id)
+CREATE TABLE IF NOT EXISTS telegram_messages (
+    id BIGSERIAL PRIMARY KEY,
+    report_id BIGINT NULL REFERENCES research_reports(id) ON DELETE SET NULL,
+    chat_id TEXT NOT NULL,
+    message_type TEXT NOT NULL,
+    title TEXT NULL,
+    body TEXT NOT NULL,
+    payload JSONB NULL,
+    status TEXT NOT NULL,
+    scheduled_for TIMESTAMPTZ NULL,
+    sent_at TIMESTAMPTZ NULL,
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    last_error TEXT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT telegram_messages_chat_id_non_empty CHECK (length(trim(chat_id)) > 0),
+    CONSTRAINT telegram_messages_message_type_non_empty CHECK (length(trim(message_type)) > 0),
+    CONSTRAINT telegram_messages_body_non_empty CHECK (length(trim(body)) > 0),
+    CONSTRAINT telegram_messages_status_non_empty CHECK (length(trim(status)) > 0)
 );
-CREATE INDEX idx_research_reports_category ON public.research_reports USING btree (category);
-CREATE INDEX idx_research_reports_created_at ON public.research_reports USING btree (created_at DESC);
-CREATE INDEX idx_research_reports_market_id ON public.research_reports USING btree (market_id);
-CREATE INDEX idx_research_reports_status ON public.research_reports USING btree (status);
 
--- Table Triggers
+CREATE INDEX idx_telegram_messages_status ON telegram_messages (status);
+CREATE INDEX idx_telegram_messages_scheduled_for ON telegram_messages (scheduled_for);
+CREATE INDEX idx_telegram_messages_chat_id ON telegram_messages (chat_id);
+CREATE INDEX idx_telegram_messages_report_id ON telegram_messages (report_id);
 
-create trigger research_reports_set_updated_at before
-update
-    on
-    public.research_reports for each row execute function set_updated_at();
+CREATE TRIGGER telegram_messages_set_updated_at
+BEFORE UPDATE ON telegram_messages
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
 
-
--- public.telegram_messages definition
-
--- Drop table
-
--- DROP TABLE public.telegram_messages;
-
-CREATE TABLE public.telegram_messages (
-	id bigserial NOT NULL,
-	report_id int8 NULL,
-	chat_id text NOT NULL,
-	message_type text NOT NULL,
-	title text NULL,
-	body text NOT NULL,
-	payload jsonb NULL,
-	status text NOT NULL,
-	scheduled_for timestamptz NULL,
-	sent_at timestamptz NULL,
-	attempt_count int4 DEFAULT 0 NOT NULL,
-	last_error text NULL,
-	created_at timestamptz DEFAULT now() NOT NULL,
-	updated_at timestamptz DEFAULT now() NOT NULL,
-	CONSTRAINT telegram_messages_attempt_count_check CHECK ((attempt_count >= 0)),
-	CONSTRAINT telegram_messages_pkey PRIMARY KEY (id),
-	CONSTRAINT telegram_messages_report_id_fkey FOREIGN KEY (report_id) REFERENCES public.research_reports(id)
+CREATE TABLE IF NOT EXISTS scheduler_jobs (
+    id BIGSERIAL PRIMARY KEY,
+    job_name TEXT NOT NULL UNIQUE,
+    service_name TEXT NOT NULL,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    schedule_type TEXT NOT NULL,
+    schedule_value TEXT NOT NULL,
+    timezone TEXT NOT NULL DEFAULT 'UTC',
+    last_run_at TIMESTAMPTZ NULL,
+    next_run_at TIMESTAMPTZ NULL,
+    last_status TEXT NULL,
+    retry_count INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
+    max_retries INTEGER NOT NULL DEFAULT 3 CHECK (max_retries >= 0),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    metadata JSONB NULL,
+    CONSTRAINT scheduler_jobs_service_name_non_empty CHECK (length(trim(service_name)) > 0),
+    CONSTRAINT scheduler_jobs_schedule_type_non_empty CHECK (length(trim(schedule_type)) > 0),
+    CONSTRAINT scheduler_jobs_schedule_value_non_empty CHECK (length(trim(schedule_value)) > 0),
+    CONSTRAINT scheduler_jobs_timezone_non_empty CHECK (length(trim(timezone)) > 0)
 );
-CREATE INDEX idx_telegram_messages_chat_id ON public.telegram_messages USING btree (chat_id);
-CREATE INDEX idx_telegram_messages_report_id ON public.telegram_messages USING btree (report_id);
-CREATE INDEX idx_telegram_messages_scheduled_for ON public.telegram_messages USING btree (scheduled_for);
-CREATE INDEX idx_telegram_messages_status ON public.telegram_messages USING btree (status);
 
--- Table Triggers
+CREATE INDEX idx_scheduler_jobs_enabled ON scheduler_jobs (enabled);
+CREATE INDEX idx_scheduler_jobs_next_run_at ON scheduler_jobs (next_run_at);
+CREATE INDEX idx_scheduler_jobs_service_name ON scheduler_jobs (service_name);
 
-create trigger telegram_messages_set_updated_at before
-update
-    on
-    public.telegram_messages for each row execute function set_updated_at();
+CREATE TRIGGER scheduler_jobs_set_updated_at
+BEFORE UPDATE ON scheduler_jobs
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
 
-
--- public.market_snapshots definition
-
--- Drop table
-
--- DROP TABLE public.market_snapshots;
-
-CREATE TABLE public.market_snapshots (
-	id bigserial NOT NULL,
-	market_id int8 NOT NULL,
-	snapshot_time timestamptz NOT NULL,
-	source_id int8 NOT NULL,
-	price numeric(18, 8) NULL,
-	best_bid numeric(18, 8) NULL,
-	best_ask numeric(18, 8) NULL,
-	volume_24h numeric(18, 8) NULL,
-	liquidity numeric(18, 8) NULL,
-	raw_payload jsonb NULL,
-	created_at timestamptz DEFAULT now() NOT NULL,
-	CONSTRAINT market_snapshots_pkey PRIMARY KEY (id),
-	CONSTRAINT market_snapshots_market_id_fkey FOREIGN KEY (market_id) REFERENCES public.markets(id),
-	CONSTRAINT market_snapshots_source_id_fkey FOREIGN KEY (source_id) REFERENCES public.sources(id)
+CREATE TABLE IF NOT EXISTS ingestion_runs (
+    id BIGSERIAL PRIMARY KEY,
+    job_id BIGINT NULL REFERENCES scheduler_jobs(id) ON DELETE SET NULL,
+    source_id BIGINT NULL REFERENCES sources(id) ON DELETE SET NULL,
+    run_type TEXT NOT NULL,
+    status TEXT NOT NULL,
+    started_at TIMESTAMPTZ NOT NULL,
+    finished_at TIMESTAMPTZ NULL,
+    items_seen INTEGER NOT NULL DEFAULT 0 CHECK (items_seen >= 0),
+    items_inserted INTEGER NOT NULL DEFAULT 0 CHECK (items_inserted >= 0),
+    items_updated INTEGER NOT NULL DEFAULT 0 CHECK (items_updated >= 0),
+    error_message TEXT NULL,
+    metadata JSONB NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT ingestion_runs_run_type_non_empty CHECK (length(trim(run_type)) > 0),
+    CONSTRAINT ingestion_runs_status_non_empty CHECK (length(trim(status)) > 0)
 );
-CREATE INDEX idx_market_snapshots_market_id ON public.market_snapshots USING btree (market_id);
-CREATE INDEX idx_market_snapshots_market_time ON public.market_snapshots USING btree (market_id, snapshot_time DESC);
-CREATE INDEX idx_market_snapshots_snapshot_time ON public.market_snapshots USING btree (snapshot_time DESC);
-CREATE INDEX idx_market_snapshots_source_id ON public.market_snapshots USING btree (source_id);
+
+CREATE INDEX idx_ingestion_runs_job_id ON ingestion_runs (job_id);
+CREATE INDEX idx_ingestion_runs_source_id ON ingestion_runs (source_id);
+CREATE INDEX idx_ingestion_runs_run_type ON ingestion_runs (run_type);
+CREATE INDEX idx_ingestion_runs_status ON ingestion_runs (status);
+CREATE INDEX idx_ingestion_runs_started_at ON ingestion_runs (started_at DESC);
+
+-- Seed canonical sources used by the current application.
+INSERT INTO sources (source_type, name, base_url, domain, category, is_active)
+VALUES
+    ('polymarket', 'Polymarket Gamma', 'https://gamma-api.polymarket.com', 'polymarket.com', 'crypto', TRUE),
+    ('polymarket', 'Polymarket Data', 'https://data-api.polymarket.com', 'polymarket.com', 'crypto', TRUE),
+    ('polymarket', 'Polymarket CLOB', 'https://clob.polymarket.com', 'polymarket.com', 'crypto', TRUE)
+ON CONFLICT (name) DO UPDATE
+SET
+    source_type = EXCLUDED.source_type,
+    base_url = EXCLUDED.base_url,
+    domain = EXCLUDED.domain,
+    category = EXCLUDED.category,
+    is_active = EXCLUDED.is_active,
+    updated_at = now();
+
+COMMIT;
+
+-- Optional verification queries:
+-- SELECT * FROM sources ORDER BY id;
+-- SELECT * FROM scheduler_jobs ORDER BY id;

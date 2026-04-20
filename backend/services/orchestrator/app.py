@@ -1,175 +1,144 @@
 from __future__ import annotations
 
-import time
-from datetime import datetime, timezone
-from typing import Any
+from dataclasses import asdict
+from typing import Any, Iterable
 
-from backend.services.aggregation.app import build_news_items_from_markets, summarize_clusters
-from backend.services.ingestion.app import build_ingestion_batch
-from backend.services.research.app import build_research_report
-from shared.config import settings
-from shared.models import MarketItem, NewsItem
+from backend.services.advisor_engine import generate_advisory_payload
+from shared.db import list_open_markets
+from shared.models import MarketItem
+from shared.polymarket_efficiency import (
+    cache_snapshot,
+    fetch_all_market_sources,
+    fetch_gamma_markets,
+    fetch_market_signals,
+    fetch_public_clob_markets,
+    get_cached_result,
+    get_polymarket_access_layer,
+)
+
+ACCESS_LAYER = get_polymarket_access_layer()
 
 
-def _batch_to_market_items(batch: dict[str, Any]) -> list[MarketItem]:
+def _rows_to_market_items(rows: Iterable[dict[str, Any]]) -> list[MarketItem]:
     items: list[MarketItem] = []
-    for raw in batch.get("items", []):
-        if not isinstance(raw, dict):
+    for row in rows:
+        if not isinstance(row, dict):
             continue
+        metadata = row.get("metadata")
+        if isinstance(metadata, str):
+            try:
+                import json
+
+                metadata = json.loads(metadata)
+            except Exception:
+                metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        item_id = str(row.get("external_id") or row.get("slug") or row.get("id") or len(items))
+        title = str(row.get("title") or row.get("question") or row.get("name") or "Untitled market")
         items.append(
             MarketItem(
-                id=str(raw.get("id", "")),
-                title=str(raw.get("title", "Untitled market")),
-                category=str(raw.get("category", "stocks")),
-                source=str(raw.get("source", "polymarket")),
-                url=str(raw.get("url", "")),
-                score=float(raw.get("score", 0.0)),
-                metadata=raw,
+                id=item_id,
+                title=title,
+                category=str(row.get("category") or "stocks"),
+                source=str(row.get("source") or "database"),
+                url=str(row.get("url") or ""),
+                score=float(row.get("score") or metadata.get("score") or 0.0),
+                metadata=metadata,
             )
         )
     return items
 
 
-def _batch_to_news_items(batch: dict[str, Any]) -> list[NewsItem]:
-    market_items = _batch_to_market_items(batch)
-    return build_news_items_from_markets(market_items)
+def get_market_feed(limit: int = 20, include_database: bool = True) -> dict[str, Any]:
+    markets = fetch_all_market_sources(limit=limit, use_cache=True)
+    db_markets: list[MarketItem] = []
+    if include_database:
+        try:
+            db_rows = list_open_markets(category="crypto", limit=limit)
+            db_markets = _rows_to_market_items(db_rows)
+        except Exception as exc:
+            print(f"[orchestrator] database market lookup failed: {exc}")
 
+    merged: dict[str, MarketItem] = {}
+    for item in db_markets + markets:
+        merged.setdefault(item.id, item)
 
-def run_polling_cycle(limit: int = 20) -> dict[str, Any]:
-    cycle_result: dict[str, Any] = {
-        "ingestion": {},
-        "aggregation": {},
-        "research": None,
-        "dashboard": None,
-        "errors": [],
+    feed = list(merged.values())[:limit]
+    return {
+        "markets": [asdict(item) for item in feed],
+        "signals": fetch_market_signals(limit=limit, use_cache=True).get("signals", {}),
+        "cache": cache_snapshot(),
+        "source_count": len(feed),
     }
 
-    try:
-        ingestion_batch = build_ingestion_batch(limit=limit)
-        cycle_result["ingestion"] = ingestion_batch
-    except Exception as exc:
-        cycle_result["errors"].append(f"ingestion: {exc}")
-        ingestion_batch = {"items": []}
 
-    news_items = _batch_to_news_items(ingestion_batch)
+def get_polymarket_snapshot(limit: int = 20) -> dict[str, Any]:
+    layer = ACCESS_LAYER
+    return {
+        "gamma": [asdict(item) for item in fetch_gamma_markets(limit=limit, use_cache=True)],
+        "public_clob": [asdict(item) for item in fetch_public_clob_markets(limit=limit, use_cache=True)],
+        "combined": [asdict(item) for item in fetch_all_market_sources(limit=limit, use_cache=True)],
+        "signals": fetch_market_signals(limit=limit, use_cache=True),
+        "cache": layer.cache_snapshot(),
+    }
 
-    try:
-        aggregation = summarize_clusters(news_items)
-        cycle_result["aggregation"] = aggregation
-    except Exception as exc:
-        cycle_result["errors"].append(f"aggregation: {exc}")
-        aggregation = {"cluster_count": 0, "clusters": []}
-        cycle_result["aggregation"] = aggregation
 
-    try:
-        research_report = build_research_report(news_items)
-        cycle_result["research"] = {
-            "id": research_report.id,
-            "title": research_report.title,
-            "summary": research_report.summary,
-            "generated_at": research_report.generated_at.isoformat(),
-            "item_count": len(research_report.items),
-        }
-    except Exception as exc:
-        cycle_result["errors"].append(f"research: {exc}")
-        research_report = None
+def get_dashboard(limit: int = 20, category: str = "stocks") -> dict[str, Any]:
+    advisory = generate_advisory_payload(category=category, market_limit=limit, news_limit=limit)
+    recommendations = advisory.get("recommendations", [])
+    buy_items = [item for item in recommendations if str(item.get("recommendation", "")).lower() == "buy"]
+    sell_items = [item for item in recommendations if str(item.get("recommendation", "")).lower() == "sell"]
+    hold_items = [item for item in recommendations if str(item.get("recommendation", "")).lower() == "hold"]
 
-    try:
-        markets = [
-            {
-                "id": item.id,
-                "title": item.title,
-                "category": item.category,
-                "source": item.source,
-                "url": item.url,
-                "score": item.score,
-                "metadata": item.metadata,
-            }
-            for item in _batch_to_market_items(ingestion_batch)
-        ]
-        dashboard_payload: dict[str, Any] = {
+    return {
+        "ok": True,
+        "dashboard": {
+            "summary": {
+                "portfolio": advisory.get("portfolio_impact", {}),
+                "sentiment": {"metrics": advisory.get("sentiment", {})},
+            },
             "sections": {
-                "marketsGrid": {
-                    "title": "Markets",
-                    "items": markets,
-                },
                 "stockRecommendations": {
-                    "title": research_report.title if research_report is not None else "Recommended Stocks",
-                    "summary": research_report.summary if research_report is not None else "",
                     "subsections": {
-                        "buy": {
-                            "label": "Buy",
-                            "items": [],
-                        },
-                        "sell": {
-                            "label": "Sell",
-                            "items": [],
-                        },
-                    },
-                },
+                        "buy": {"items": buy_items},
+                        "sell": {"items": sell_items},
+                        "hold": {"items": hold_items},
+                    }
+                }
             },
             "sharedMeta": {
-                "generatedAt": datetime.now(timezone.utc).isoformat(),
-                "reportId": research_report.id if research_report is not None else None,
-                "counts": {
-                    "markets": len(markets),
-                    "buyRecommendations": 0,
-                    "sellRecommendations": 0,
-                },
+                "generatedAt": advisory.get("generated_at"),
+                "category": category,
+                "limit": limit,
+                "recommendationCount": len(recommendations),
             },
-        }
-        cycle_result["dashboard"] = dashboard_payload
-    except Exception as exc:
-        cycle_result["errors"].append(f"dashboard: {exc}")
-        cycle_result["dashboard"] = {"ok": False, "error": str(exc)}
-
-    return cycle_result
+        },
+        "advisory": advisory,
+    }
 
 
-def _safe_sleep(seconds: int) -> None:
-    time.sleep(max(1, seconds))
+def get_cached_polymarket_result(cache_key: str) -> Any | None:
+    return get_cached_result(cache_key)
 
 
-def run_worker_loop() -> None:
-    interval_seconds = max(1, int(settings.scheduler_interval_seconds))
-    backoff_seconds = max(1, min(int(settings.scheduler_backoff_seconds), int(settings.scheduler_max_backoff_seconds)))
-    print(f"[orchestrator] starting worker loop (interval={interval_seconds}s, backoff={backoff_seconds}s)")
-
-    while True:
-        cycle_started = datetime.now(timezone.utc).isoformat()
-        print(f"[orchestrator] cycle started at {cycle_started}")
-
-        try:
-            cycle_result = run_polling_cycle(limit=20)
-            errors = cycle_result.get("errors", [])
-            if errors:
-                for error in errors:
-                    print(f"[orchestrator] stage error: {error}")
-            research = cycle_result.get("research") or {}
-            aggregation = cycle_result.get("aggregation") or {}
-            dashboard = cycle_result.get("dashboard") or {}
-            print(
-                "[orchestrator] cycle complete: "
-                f"items={len(_batch_to_market_items(cycle_result.get('ingestion') or {}))} "
-                f"clusters={aggregation.get('cluster_count', 0)} "
-                f"report={research.get('title', 'n/a')} "
-                f"dashboard={bool(dashboard)}"
-            )
-            _safe_sleep(interval_seconds)
-        except Exception as exc:  # pragma: no cover - defensive logging for long-running worker
-            print(f"[orchestrator] recoverable error: {exc}")
-            _safe_sleep(backoff_seconds)
+def main() -> int:
+    snapshot = get_polymarket_snapshot(limit=10)
+    print(
+        "[orchestrator] polymarket snapshot "
+        f"combined={len(snapshot.get('combined', []))} "
+        f"cache_entries={len(snapshot.get('cache', {}))}"
+    )
+    return 0
 
 
-def main() -> dict[str, Any] | None:
-    if not settings.scheduler_enabled:
-        result = run_polling_cycle()
-        print(f"[orchestrator] single cycle complete: {result['research']['title']}")
-        return result
-
-    run_worker_loop()
-    return None
+def run() -> int:
+    return main()
 
 
-if __name__ == "__main__":
-    main()
+def start() -> int:
+    return main()
+
+
+app = main

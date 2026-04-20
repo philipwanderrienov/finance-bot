@@ -160,38 +160,50 @@ def insert_research_report(report: ResearchReport, category: str = "stocks", con
     return fetch_one(query, params, config)
 
 
-def insert_market_item(item: MarketItem, config: Optional[Settings] = None) -> Dict[str, Any]:
+def insert_market_item(item: MarketItem, source_id: int | None = None, config: Optional[Settings] = None) -> Dict[str, Any]:
     query = """
         INSERT INTO markets (
+            source_id,
             external_id,
+            slug,
             title,
+            description,
             category,
+            status,
             url,
-            source,
-            score,
+            published_at,
+            resolved_at,
             metadata,
             created_at,
             updated_at
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, COALESCE(%s, NOW()), COALESCE(%s, NOW()))
-        ON CONFLICT (external_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, COALESCE(%s, NOW()), COALESCE(%s, NOW()))
+        ON CONFLICT (source_id, external_id)
         DO UPDATE SET
+            slug = EXCLUDED.slug,
             title = EXCLUDED.title,
+            description = EXCLUDED.description,
             category = EXCLUDED.category,
+            status = EXCLUDED.status,
             url = EXCLUDED.url,
-            source = EXCLUDED.source,
-            score = EXCLUDED.score,
+            published_at = EXCLUDED.published_at,
+            resolved_at = EXCLUDED.resolved_at,
             metadata = EXCLUDED.metadata,
             updated_at = NOW()
         RETURNING *
     """
+    metadata = dict(item.metadata or {})
     params = (
+        source_id or 1,
         item.id,
+        metadata.get("slug") or metadata.get("questionID") or item.id,
         item.title,
+        metadata.get("description"),
         item.category,
+        "open" if metadata.get("closed") is False else "closed",
         item.url or None,
-        item.source,
-        item.score,
+        metadata.get("createdAt"),
+        metadata.get("updatedAt"),
         _json_dumps(item.metadata or {}),
         utcnow(),
         utcnow(),
