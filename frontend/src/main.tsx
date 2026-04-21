@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import ReactDOM from "react-dom/client";
 
 type SentimentTone = "bullish" | "neutral" | "bearish" | "unknown";
-type RecommendationSignal = "Buy" | "Sell";
+type RecommendationSignal = "Buy" | "Sell" | "Hold";
 
 type PortfolioSummary = {
   totalValue: string;
@@ -50,13 +50,47 @@ type BackendRecommendation = {
   symbol?: string;
   signal?: string;
   confidence?: number | string;
-  target?: string;
-  entry?: string;
-  stopLoss?: string;
-  takeProfit?: string;
+  target?: number | string;
+  entry?: number | string;
+  stopLoss?: number | string;
+  takeProfit?: number | string;
   rationale?: string;
   reasons?: Array<string | { label?: string; detail?: string }>;
 };
+
+type BackendDashboardItem = {
+  combined_score?: number | string;
+  sentiment_score?: number | string;
+  technical_score?: number | string;
+  reasons?: Array<string | { label?: string; detail?: string }>;
+  news_summary?: string;
+  technical_verification?: {
+    momentum_score?: number | string;
+    volume_change_pct?: number | string;
+    technical_confirmation?: boolean;
+    verification_strength?: number | string;
+    verification_reason?: string;
+  };
+  sentiment?: {
+    score?: number | string;
+    label?: string;
+    direction?: string;
+    confidence?: number | string;
+    magnitude?: number | string;
+    rationale?: string;
+    keywords?: string[];
+    method?: string;
+  };
+  market?: {
+    id?: string | number;
+    title?: string;
+    category?: string;
+    source?: string;
+    url?: string;
+  };
+};
+
+type RawDashboardPayload = unknown;
 
 type DashboardResponse = {
   ok: boolean;
@@ -75,12 +109,14 @@ type DashboardResponse = {
         allocationLabel?: string;
       };
       sentiment?: {
-        metrics?: Array<{
-          label?: string;
-          value?: number | string;
-          hint?: string;
-          tone?: SentimentTone | string;
-        }>;
+        metrics?:
+          | Array<{
+              label?: string;
+              value?: number | string;
+              hint?: string;
+              tone?: SentimentTone | string;
+            }>
+          | Record<string, unknown>;
       };
     };
     sections?: {
@@ -96,6 +132,10 @@ type DashboardResponse = {
             label?: string;
             items?: BackendRecommendation[];
           };
+          hold?: {
+            label?: string;
+            items?: BackendRecommendation[];
+          };
         };
       };
     };
@@ -108,8 +148,10 @@ type DashboardResponse = {
   };
 };
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
-const DASHBOARD_ENDPOINT = `${API_BASE_URL.replace(/\/$/, "") || "/api"}/dashboard?limit=20`;
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "").trim();
+const API_BASE_URL_NORMALIZED = API_BASE_URL.replace(/\/$/, "");
+const DEFAULT_API_ORIGIN = "http://127.0.0.1:8000";
+const DASHBOARD_ENDPOINT = `${API_BASE_URL_NORMALIZED || DEFAULT_API_ORIGIN}/api/dashboard?limit=20`;
 const DEFAULT_DISCLAIMER =
   "Decision support only: this dashboard surfaces signals and explanations for human review. It is not an autonomous decision-maker, and users should review the underlying data before acting.";
 
@@ -202,53 +244,168 @@ function buildReasons(rec: BackendRecommendation): ExplanationReason[] {
 }
 
 function buildPortfolioSummary(dashboard?: DashboardResponse["dashboard"]): PortfolioSummary {
-  const portfolio = dashboard?.summary?.portfolio;
+  const portfolio = dashboard?.summary?.portfolio as
+    | {
+        totalValue?: number | string;
+        cash?: number | string;
+        invested?: number | string;
+        dayChange?: number | string;
+        dayChangePercent?: number | string;
+        riskLevel?: string;
+        allocationLabel?: string;
+        portfolio_value?: number | string;
+        risk_budget?: number | string;
+        estimated_exposure_delta?: number | string;
+        impact_label?: string;
+      }
+    | undefined;
+
   return {
-    totalValue: formatCurrency(portfolio?.totalValue ?? "—"),
-    cash: formatCurrency(portfolio?.cash ?? "—"),
-    invested: formatCurrency(portfolio?.invested ?? "—"),
-    dayChange: formatCurrency(portfolio?.dayChange ?? "—"),
-    dayChangePercent: formatPercent(portfolio?.dayChangePercent ?? "—"),
-    riskLevel: portfolio?.riskLevel?.trim() || "Balanced",
+    totalValue: formatCurrency(portfolio?.totalValue ?? portfolio?.portfolio_value ?? "—"),
+    cash: formatCurrency(portfolio?.cash ?? portfolio?.risk_budget ?? "—"),
+    invested: formatCurrency(portfolio?.invested ?? portfolio?.estimated_exposure_delta ?? "—"),
+    dayChange: formatCurrency(portfolio?.dayChange ?? portfolio?.estimated_exposure_delta ?? "—"),
+    dayChangePercent: formatPercent(portfolio?.dayChangePercent ?? portfolio?.estimated_exposure_delta ?? "—"),
+    riskLevel: portfolio?.riskLevel?.trim() || portfolio?.impact_label?.trim() || "Balanced",
     allocationLabel: portfolio?.allocationLabel?.trim() || "Diversified allocation",
   };
 }
 
-function buildSentimentMetrics(dashboard?: DashboardResponse["dashboard"]): SentimentMetric[] {
-  const metrics = dashboard?.summary?.sentiment?.metrics ?? [];
+function buildSentimentMetrics(dashboard?: DashboardResponse["dashboard"], items: BackendDashboardItem[] = []): SentimentMetric[] {
+  const rawMetrics = dashboard?.summary?.sentiment?.metrics ?? [];
 
-  if (metrics.length === 0) {
+  const metrics = Array.isArray(rawMetrics)
+    ? rawMetrics
+    : Object.values(rawMetrics as Record<string, unknown>).flatMap((value) => (Array.isArray(value) ? value : []) as Array<{
+        label?: string;
+        value?: number | string;
+        hint?: string;
+        tone?: SentimentTone | string;
+      }>);
+
+  if (metrics.length > 0) {
+    return metrics.map((metric) => ({
+      label: metric.label?.trim() || "Metric",
+      value:
+        typeof metric.value === "number" || typeof metric.value === "string"
+          ? String(metric.value)
+          : "—",
+      hint: metric.hint?.trim(),
+      tone:
+        metric.tone === "bullish" || metric.tone === "neutral" || metric.tone === "bearish"
+          ? metric.tone
+          : "unknown",
+    }));
+  }
+
+  if (rawMetrics && typeof rawMetrics === "object" && !Array.isArray(rawMetrics)) {
+    const sentimentRecord = rawMetrics as Record<string, unknown>;
+    const direction = typeof sentimentRecord.direction === "string" ? sentimentRecord.direction.trim().toLowerCase() : "unknown";
+    const tone: SentimentTone =
+      direction === "bullish" || direction === "neutral" || direction === "bearish" ? direction : "unknown";
+
     return [
-      { label: "Market sentiment", value: "—", hint: "Waiting for backend signal feed", tone: "unknown" },
-      { label: "News polarity", value: "—", hint: "No news summary available yet", tone: "unknown" },
-      { label: "Confidence", value: "—", hint: "Model output pending", tone: "unknown" },
+      {
+        label: "Sentiment label",
+        value: typeof sentimentRecord.label === "string" ? sentimentRecord.label : "—",
+        hint: typeof sentimentRecord.rationale === "string" ? sentimentRecord.rationale : "Derived from backend sentiment analysis.",
+        tone,
+      },
+      {
+        label: "Confidence",
+        value: formatPercent(sentimentRecord.confidence ?? "—"),
+        hint: `Items scored: ${formatGenericNumber(sentimentRecord.items_scored ?? 0)}`,
+        tone,
+      },
+      {
+        label: "Magnitude",
+        value: formatPercent(sentimentRecord.magnitude ?? sentimentRecord.score ?? "—"),
+        hint: Array.isArray(sentimentRecord.keywords) && sentimentRecord.keywords.length > 0 ? `Keywords: ${sentimentRecord.keywords.join(", ")}` : "No keywords returned by backend.",
+        tone,
+      },
     ];
   }
 
-  return metrics.map((metric) => ({
-    label: metric.label?.trim() || "Metric",
-    value: typeof metric.value === "number" || typeof metric.value === "string" ? String(metric.value) : "—",
-    hint: metric.hint?.trim(),
-    tone: metric.tone === "bullish" || metric.tone === "neutral" || metric.tone === "bearish" ? metric.tone : "unknown",
-  }));
+  const first = items[0];
+  if (first) {
+    const sentimentLabel = first.sentiment?.label?.trim() || "unknown";
+    const tone: SentimentTone =
+      sentimentLabel === "bullish" || sentimentLabel === "neutral" || sentimentLabel === "bearish" ? sentimentLabel : "unknown";
+
+    return [
+      {
+        label: "Sentiment score",
+        value: formatPercent(first.sentiment_score ?? first.sentiment?.score ?? "—"),
+        hint: first.sentiment?.rationale?.trim() || "Derived from backend sentiment analysis.",
+        tone,
+      },
+      {
+        label: "Technical score",
+        value: formatPercent(first.technical_score ?? first.technical_verification?.momentum_score ?? "—"),
+        hint: first.technical_verification?.verification_reason?.trim() || "Derived from backend technical verification.",
+        tone: "neutral",
+      },
+      {
+        label: "Combined score",
+        value: formatPercent(first.combined_score ?? "—"),
+        hint: first.news_summary?.trim() || "Aggregated decision-support score from backend.",
+        tone,
+      },
+    ];
+  }
+
+  return [
+    { label: "Market sentiment", value: "—", hint: "Waiting for backend signal feed", tone: "unknown" },
+    { label: "News polarity", value: "—", hint: "No news summary available yet", tone: "unknown" },
+    { label: "Confidence", value: "—", hint: "Model output pending", tone: "unknown" },
+  ];
 }
 
-function buildRecommendations(dashboard?: DashboardResponse["dashboard"]): AdvisorRecommendation[] {
+function buildRecommendations(dashboard?: DashboardResponse["dashboard"], items: BackendDashboardItem[] = []): AdvisorRecommendation[] {
   const buyItems = dashboard?.sections?.stockRecommendations?.subsections?.buy?.items ?? [];
   const sellItems = dashboard?.sections?.stockRecommendations?.subsections?.sell?.items ?? [];
+  const holdItems = dashboard?.sections?.stockRecommendations?.subsections?.hold?.items ?? [];
 
-  const normalize = (item: BackendRecommendation, signal: RecommendationSignal): AdvisorRecommendation => ({
-    symbol: item.symbol?.trim() || "UNKNOWN",
+  const normalize = (item: BackendRecommendation & { market_title?: string; combined_score?: number | string; technical_score?: number | string; sentiment_score?: number | string }, signal: RecommendationSignal): AdvisorRecommendation => ({
+    symbol: item.symbol?.trim() || item.market_title?.trim() || "UNKNOWN",
     signal,
     confidence: formatPercent(item.confidence ?? "—"),
-    target: formatCurrency(item.target ?? "—"),
-    entry: formatCurrency(item.entry ?? "—"),
-    stopLoss: formatCurrency(item.stopLoss ?? "—"),
-    takeProfit: formatCurrency(item.takeProfit ?? "—"),
+    target: formatCurrency(item.target ?? item.combined_score ?? "—"),
+    entry: formatCurrency(item.entry ?? item.sentiment_score ?? "—"),
+    stopLoss: formatCurrency(item.stopLoss ?? item.technical_score ?? "—"),
+    takeProfit: formatCurrency(item.takeProfit ?? item.combined_score ?? "—"),
     reasons: buildReasons(item),
   });
 
-  return [...buyItems.map((item) => normalize(item, "Buy")), ...sellItems.map((item) => normalize(item, "Sell"))];
+  const sectionRecommendations = [
+    ...buyItems.map((item: BackendRecommendation) => normalize(item, "Buy")),
+    ...sellItems.map((item: BackendRecommendation) => normalize(item, "Sell")),
+    ...holdItems.map((item: BackendRecommendation) => normalize(item, "Hold")),
+  ];
+
+  if (sectionRecommendations.length > 0) {
+    return sectionRecommendations;
+  }
+
+  return items.map((item) => {
+    const combinedScore = Number(item.combined_score ?? 0);
+    const signal: RecommendationSignal = combinedScore > 0.15 ? "Buy" : combinedScore < -0.15 ? "Sell" : "Hold";
+    const confidenceSource = item.sentiment?.confidence ?? item.technical_verification?.verification_strength ?? Math.abs(combinedScore);
+
+    return {
+      symbol: item.market?.title?.trim() || String(item.market?.id ?? "UNKNOWN"),
+      signal,
+      confidence: formatPercent(confidenceSource ?? "—"),
+      target: formatGenericNumber(item.market?.id ?? "—"),
+      entry: formatPercent(item.sentiment_score ?? "—"),
+      stopLoss: formatPercent(item.technical_score ?? "—"),
+      takeProfit: formatPercent(item.combined_score ?? "—"),
+      reasons: buildReasons({
+        rationale: item.sentiment?.rationale || item.technical_verification?.verification_reason || item.news_summary,
+        reasons: item.reasons,
+      }),
+    };
+  });
 }
 
 function toneStyles(tone: SentimentTone): { background: string; color: string; border: string } {
@@ -265,9 +422,15 @@ function toneStyles(tone: SentimentTone): { background: string; color: string; b
 }
 
 function signalStyles(signal: RecommendationSignal): { background: string; color: string } {
-  return signal === "Buy"
-    ? { background: "#dcfce7", color: "#166534" }
-    : { background: "#fee2e2", color: "#991b1b" };
+  if (signal === "Buy") {
+    return { background: "#dcfce7", color: "#166534" };
+  }
+
+  if (signal === "Hold") {
+    return { background: "#e0f2fe", color: "#075985" };
+  }
+
+  return { background: "#fee2e2", color: "#991b1b" };
 }
 
 function App() {
@@ -290,17 +453,28 @@ function App() {
           throw new Error(`Request failed with status ${response.status}`);
         }
 
-        const payload = (await response.json()) as DashboardResponse;
+        const payload = (await response.json()) as RawDashboardPayload;
+        const dashboardPayload: DashboardResponse | null =
+          payload && typeof payload === "object" && !Array.isArray(payload) && "dashboard" in payload
+            ? (payload as DashboardResponse)
+            : null;
+        const items: BackendDashboardItem[] = Array.isArray(payload)
+          ? payload as BackendDashboardItem[]
+          : payload && typeof payload === "object" && !Array.isArray(payload) && "dashboard" in payload
+            ? []
+            : payload && typeof payload === "object"
+              ? [payload as BackendDashboardItem]
+              : [];
 
-        if (!payload.ok) {
+        if (dashboardPayload && !dashboardPayload.ok) {
           throw new Error("Backend returned a non-ok dashboard payload");
         }
 
         setDashboard({
-          portfolio: buildPortfolioSummary(payload.dashboard),
-          sentiment: buildSentimentMetrics(payload.dashboard),
-          recommendations: buildRecommendations(payload.dashboard),
-          generatedAt: payload.dashboard?.sharedMeta?.generatedAt ?? null,
+          portfolio: buildPortfolioSummary(dashboardPayload?.dashboard),
+          sentiment: buildSentimentMetrics(dashboardPayload?.dashboard, items),
+          recommendations: buildRecommendations(dashboardPayload?.dashboard, items),
+          generatedAt: dashboardPayload?.dashboard?.sharedMeta?.generatedAt ?? null,
         });
       } catch (loadError) {
         if (loadError instanceof DOMException && loadError.name === "AbortError") {
